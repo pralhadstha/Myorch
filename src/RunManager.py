@@ -120,6 +120,183 @@ class RunManager(object):
         self.predictions_test = []
         self.predictions_original_test = []
 
+    def end_epoch(self, hasValidation=False):
+        epoch_duration = time.time() - self.epoch_start_time
+        run_duration = time.time() - self.run_start_time
+
+        loss = self.epoch_loss / len(self.loader.dataset)
+        accuracy = self.epoch_num_correct / (len(self.loader.dataset)/3)
+        #accuracy = accuracy_score(self.actuals_train, self.predictions_train)
+        roc_auc_train = roc_auc_score(self.list_to_tensor_list(self.actuals_train), self.list_to_tensor_list(self.predictions_train))
+
+        if (hasValidation):
+            epoch_validation_duration = time.time() - self.epoch_validation_start_time
+            loss_validation = self.epoch_validation_loss / len(self.validation_loader.dataset)
+            accuracy_validation = self.epoch_validation_num_correct / (len(self.validation_loader.dataset)/3)
+            #accuracy_validation = accuracy_score(self.actuals_validation, self.predictions_validation)
+            roc_auc_validation = roc_auc_score(self.list_to_tensor_list(self.actuals_validation), self.list_to_tensor_list(self.predictions_validation))
+
+        if (hasValidation):
+            self.tb.add_scalars('Loss', { 'train':loss, 'validation': loss_validation }, self.epoch_count)
+            self.tb.add_scalars('Accuracy', { 'train':accuracy, 'validation': accuracy_validation }, self.epoch_count)
+
+            self.tb.add_pr_curve('prec-rec-curve-train', self.list_to_tensor_list(self.actuals_train, False), self.list_to_tensor_list(self.predictions_original_train, False), self.epoch_count)
+            self.tb.add_pr_curve('prec-rec-curve-val', self.list_to_tensor_list(self.actuals_validation, False), self.list_to_tensor_list(self.predictions_original_validation, False), self.epoch_count)
+        else:
+            self.tb.add_scalar('Loss', loss, self.epoch_count)
+            self.tb.add_scalar('Accuracy', accuracy, self.epoch_count)
+            self.tb.add_pr_curve('prec-rec-curve-train', self.list_to_tensor_list(self.actuals_train, False), self.list_to_tensor_list(self.predictions_original_train, False), self.epoch_count)
+
+        for name, param in self.network.named_parameters():
+            self.tb.add_histogram(name, param, self.epoch_count)
+            self.tb.add_histogram(f'{name}.grad', param.grad, self.epoch_count)
+
+        if (hasValidation):
+            for name, param in self.network_train.named_parameters():
+                self.tb.add_histogram(f"{name}.train", param, self.epoch_count)
+                self.tb.add_histogram(f'{name}.train.grad', param.grad, self.epoch_count)
+
+        matrix_train = self.confusion_matrix_(self.list_to_tensor_list(self.predictions_train), self.list_to_tensor_list(self.actuals_train), False)
+        true_neg, false_pos, false_neg, true_pos = matrix_train.ravel()
+        self.plot_confusion_matrix(matrix_train, self.target_names, f"confusion_matrix_train_epoch_{self.epoch_count}")
+
+        classification_report_train = classification_report(self.list_to_tensor_list(self.actuals_train), self.list_to_tensor_list(self.predictions_train), target_names=self.target_names, output_dict=True)
+        trainDict = {
+            'run' : self.run_count,
+            'epoch' : self.epoch_count,
+            'run_name' : self.utils.get_runtime(),
+            'loss' : loss,
+            'accuracy' : accuracy,
+            'roc_auc' : roc_auc_train,
+            'epoch_duration' : epoch_duration,
+            'run_duration' : run_duration,
+            'correct_prediction': self.epoch_num_correct,
+            'predicted_alive_0': self.array_value_count(self.list_to_tensor_list(self.predictions_train, False), 0),
+            'predicted_dead_1': self.array_value_count(self.list_to_tensor_list(self.predictions_train, False), 1),
+            'true_pos': float(true_pos),
+            'false_pos': float(false_pos),
+            'false_neg': float(false_neg),
+            'true_neg': float(true_neg),
+            'precision_alive': classification_report_train['Alive']['precision'],
+            'recall_alive': classification_report_train['Alive']['recall'],
+            'f1_score_alive': classification_report_train['Alive']['f1-score'],
+            'support_alive': classification_report_train['Alive']['support'],
+            'precision_dead': classification_report_train['Dead']['precision'],
+            'recall_dead': classification_report_train['Dead']['recall'],
+            'f1_score_dead': classification_report_train['Dead']['f1-score'],
+            'support_dead': classification_report_train['Dead']['support'],
+            'accuracy_cr': classification_report_train['accuracy'],
+            'early_stop': '-',
+            'loss_reduced': '-',
+            'model_saved': '-',
+            'type': 'train',
+            'activation_fn': self.utils.get_param('activation', '-'),
+        }
+        self.create_statistics(trainDict)
+        if (self.utils.get_param('displayTable', True)):
+            self.run_statistics()
+        #self.tb.add_hparams(self.create_hparams(), self.create_stats_dict(trainDict))
+
+        if (hasValidation):
+            matrix_val = self.confusion_matrix_(self.list_to_tensor_list(self.predictions_validation), self.list_to_tensor_list(self.actuals_validation), False)
+            true_neg, false_pos, false_neg, true_pos = matrix_val.ravel()
+            self.plot_confusion_matrix(matrix_val, self.target_names, f"confusion_matrix_validation_epoch_{self.epoch_count}")
+
+            classification_report_validation = classification_report(self.list_to_tensor_list(self.actuals_validation), self.list_to_tensor_list(self.predictions_validation), target_names=self.target_names, output_dict=True)
+            validationDict = {
+                'run' : self.run_count,
+                'epoch' : self.epoch_count,
+                'run_name' : self.utils.get_runtime(),
+                'loss' : loss_validation,
+                'accuracy' : accuracy_validation,
+                'roc_auc' : roc_auc_validation,
+                'epoch_duration' : epoch_validation_duration,
+                'run_duration' : run_duration,
+                'correct_prediction': self.epoch_validation_num_correct,
+                'predicted_alive_0': self.array_value_count(self.list_to_tensor_list(self.predictions_validation, False), 0),
+                'predicted_dead_1': self.array_value_count(self.list_to_tensor_list(self.predictions_validation, False), 1),
+                'true_pos': float(true_pos),
+                'false_pos': float(false_pos),
+                'false_neg': float(false_neg),
+                'true_neg': float(true_neg),
+                'precision_alive': classification_report_validation['Alive']['precision'],
+                'recall_alive': classification_report_validation['Alive']['recall'],
+                'f1_score_alive': classification_report_validation['Alive']['f1-score'],
+                'support_alive': classification_report_validation['Alive']['support'],
+                'precision_dead': classification_report_validation['Dead']['precision'],
+                'recall_dead': classification_report_validation['Dead']['recall'],
+                'f1_score_dead': classification_report_validation['Dead']['f1-score'],
+                'support_dead': classification_report_validation['Dead']['support'],
+                'accuracy_cr': classification_report_validation['accuracy'],
+                'early_stop': '-',
+                'loss_reduced': '-',
+                'model_saved': '-',
+                'type': 'validation',
+                'activation_fn': self.utils.get_param('activation', '-'),
+            }
+            if (self.estopping != None):
+                dict = {
+                'model' : self.network.state_dict(),
+                'optimizer' : self.optimizer.state_dict(),
+                'epoch': self.epoch_count,
+                }
+                self.estop = self.estopping.step(loss_validation, dict)
+                validationDict['early_stop'] = 'Y' if self.estop else '-'
+                validationDict['loss_reduced'] = self.estopping.best if self.estopping.loss_reduced else '-'
+                validationDict['model_saved'] = 'Y' if self.estopping.model_saved else '-'
+            self.create_statistics(validationDict)
+            if (self.utils.get_param('displayTable', True)):
+                self.run_statistics()
+            #self.tb.add_hparams(self.create_hparams(), self.create_stats_dict(validationDict))
+        if ((self.epoch_count % self.flush_tb_epoch) == 0):
+            # self.tb.flush() # since tb flushes event in 120 second by default so this has been commented.
+            self.utils.save_intermediate_summary_writer()
+
+    def end_test(self):
+        epoch_duration = time.time() - self.epoch_start_time
+        run_duration = time.time() - self.run_start_time
+
+        accuracy = self.epoch_num_correct / (len(self.loader.dataset)/3)
+        roc_auc_test = roc_auc_score(self.list_to_tensor_list(self.actuals_test), self.list_to_tensor_list(self.predictions_test))
+        
+        self.tb.add_scalar('Accuracy-test', accuracy, self.epoch_count)
+        self.tb.add_pr_curve('prec-rec-curve-test', self.list_to_tensor_list(self.actuals_test, False), self.list_to_tensor_list(self.predictions_original_test, False), self.epoch_count)
+
+        matrix_test = self.confusion_matrix_(self.list_to_tensor_list(self.predictions_test), self.list_to_tensor_list(self.actuals_test), False)
+        true_neg, false_pos, false_neg, true_pos = matrix_test.ravel()
+        self.plot_confusion_matrix(matrix_test, self.target_names, f"confusion_matrix_test_epoch_{self.epoch_count}", predicted=True)
+
+        classification_report_test = classification_report(self.list_to_tensor_list(self.actuals_test), self.list_to_tensor_list(self.predictions_test), target_names=self.target_names, output_dict=True)
+        testDict = {
+            'run' : self.run_count,
+            'epoch' : self.epoch_count,
+            'run_name' : self.utils.get_runtime(),
+            'accuracy' : accuracy,
+            'roc_auc' : roc_auc_test,
+            'epoch_duration' : epoch_duration,
+            'run_duration' : run_duration,
+            'correct_prediction': self.epoch_num_correct,
+            'predicted_alive_0': self.array_value_count(self.list_to_tensor_list(self.predictions_test, False), 0),
+            'predicted_dead_1': self.array_value_count(self.list_to_tensor_list(self.predictions_test, False), 1),
+            'true_pos': float(true_pos),
+            'false_pos': float(false_pos),
+            'false_neg': float(false_neg),
+            'true_neg': float(true_neg),
+            'precision_alive': classification_report_test['Alive']['precision'],
+            'recall_alive': classification_report_test['Alive']['recall'],
+            'f1_score_alive': classification_report_test['Alive']['f1-score'],
+            'support_alive': classification_report_test['Alive']['support'],
+            'precision_dead': classification_report_test['Dead']['precision'],
+            'recall_dead': classification_report_test['Dead']['recall'],
+            'f1_score_dead': classification_report_test['Dead']['f1-score'],
+            'support_dead': classification_report_test['Dead']['support'],
+            'accuracy_cr': classification_report_test['accuracy'],
+            'type': 'test',
+        }
+        self.create_statistics(testDict)
+        if (self.utils.get_param('displayTable', True)):
+            self.run_statistics()
+
     def track_loss(self, loss, batch):
         self.epoch_loss += loss.item() * batch[0].shape[0]
 
